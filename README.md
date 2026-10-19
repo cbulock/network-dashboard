@@ -200,12 +200,17 @@ repair storage. Publishing follows GitHub's
 using its automatic `GITHUB_TOKEN` with `packages: write`; no registry password
 or integration credentials need to be added to Actions secrets.
 
-The image is hosted in [GitHub Packages](https://github.com/cbulock/network-dashboard/pkgs/container/network-dashboard).
-New packages default to private. If anonymous pulls are desired, change this
-package's visibility to Public in its settings. Otherwise sign in on the Docker
-host with a GitHub token that has `read:packages` using `docker login ghcr.io`.
-Repository visibility alone does not make the image public. The workflow does
-not change package visibility.
+The public image is hosted in
+[GitHub Packages](https://github.com/users/cbulock/packages/container/package/network-dashboard).
+No registry login is required:
+
+```sh
+docker pull ghcr.io/cbulock/network-dashboard:latest
+```
+
+The workflow preserves the package's configured visibility. For private forks,
+sign in on the Docker host with a GitHub token that has `read:packages` using
+`docker login ghcr.io`.
 
 To pin a deployment or roll back, set `DASHBOARD_IMAGE` in `.env` to a published
 version, `sha-<full-commit>` tag, or `ghcr.io/cbulock/network-dashboard@sha256:<digest>`
