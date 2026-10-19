@@ -1,0 +1,29 @@
+services:
+  dashboard:
+    image: ${DASHBOARD_IMAGE:-ghcr.io/cbulock/network-dashboard:latest}
+    build: .
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+    volumes:
+      - dashboard-data:/app/.data
+
+  worker:
+    image: ${DASHBOARD_IMAGE:-ghcr.io/cbulock/network-dashboard:latest}
+    build: .
+    profiles: [worker]
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    command: [node, /app/scripts/dns-worker.js]
+    # This service processes jobs; it does not serve HTTP.
+    healthcheck:
+      disable: true
+    stop_grace_period: 45s
+    volumes:
+      - dashboard-data:/app/.data
+
+volumes:
+  dashboard-data:

@@ -97,6 +97,121 @@ IP boundaries are persisted on `virtual_subnets`; schema setup adds the two null
 
 ## Setup
 
+### Docker deployment
+
+The image runs the production Nuxt server on port 3000 as the unprivileged
+`node` user. It also includes the standalone collectors and OpenSSH client.
+The [multi-stage build](https://docs.docker.com/build/building/multi-stage/)
+installs from `package-lock.json`; local dependencies, generated output, `.env`
+files, logs and private keys are excluded from the build context.
+
+On a new deployment host:
+
+```sh
+cp docker.env.example .env
+# Edit .env with the database and upstream connection details.
+docker compose config --quiet
+docker compose up -d --no-build --pull always dashboard
+docker compose ps
+docker compose logs --tail=100 dashboard
+```
+
+Open `http://<docker-host>:3000` (or the `DASHBOARD_PORT` configured in `.env`).
+`GET /api/health` is the container's HTTP liveness check; it does not check
+PostgreSQL or upstream systems. Verify `/api/inventory/devices` as well to confirm
+database connectivity. Keep access on your trusted network or place an
+authenticated reverse proxy in front of it; the app has no login screen.
+
+**Database:** PostgreSQL is external to this Compose stack. Set `DATABASE_URL`
+to an existing database reachable from the container, with permissions to create
+and alter its tables. Schema setup runs automatically on the first inventory
+request or collector run. A new empty database starts with an empty inventory.
+To retain existing inventory, point to the same database or back it up and restore
+it on the destination before switching hosts. `localhost` in a container refers
+to that container; for a database on the Docker Desktop host, use
+`host.docker.internal`. On Linux use a reachable host address or configure the
+equivalent host-gateway mapping. Verify that Docker can resolve and reach the
+database, UniFi, Home Assistant, Kuma and optional DNS controller hostnames.
+
+**Collection:** inventory Refresh reads stored data. Run collectors explicitly,
+or schedule these commands with the deployment host's scheduler at your desired
+interval (avoid overlapping runs of the same collector):
+
+```sh
+docker compose exec -T dashboard node /app/scripts/fetch-unifi.js
+docker compose exec -T dashboard node /app/scripts/fetch-ha.js
+docker compose exec -T dashboard node /app/scripts/fetch-uptime-kuma.js
+```
+
+The continuous worker handles queued UniFi IP changes and DNS operations. Enable
+it when using those controls, even if you do not use DNS Platform:
+
+```sh
+docker compose --profile worker up -d --no-build --pull always
+docker compose logs --tail=100 worker
+```
+
+Without DNS Platform configuration, the worker can still process UniFi jobs;
+DNS import attempts log configuration errors. Only one worker may hold the
+database advisory lock. Before moving operation processing to Docker, reconcile
+pending operations and stop the old host's scheduled worker using the commands
+in the DNS Platform section below.
+
+**Optional DNS Platform SSH:** set `DNS_PLATFORM_SSH_TARGET`, set
+`DNS_PLATFORM_SSH_KEY=/home/node/.ssh/id_ed25519`, and set `DASHBOARD_SSH_DIR`
+to an absolute directory on the Docker host. Put only the dedicated restricted
+controller key (`id_ed25519`) and a verified `known_hosts` file in that directory.
+The image uses UID/GID 1000; on Linux make the directory/key owned by that user,
+with directory mode 700 and key mode 600. The mount is read-only and SSH retains
+strict host-key checking. Start both services with the SSH overlay:
+
+```sh
+docker compose -f compose.yaml -f compose.ssh.yaml --profile worker up -d --no-build --pull always
+docker compose -f compose.yaml -f compose.ssh.yaml exec -T dashboard node /app/scripts/fetch-dns-platform.js
+```
+
+Use the same Compose file/profile flags for subsequent updates. Repeat the
+`up -d --no-build --pull always` command to pull the published image and recreate
+changed services. To build from a local checkout instead, use
+`docker compose up -d --build dashboard` (include the worker/SSH flags as needed).
+`.data` repair manifests persist in the `dashboard-data` named volume; all
+inventory and queued jobs persist in PostgreSQL. Back up both. `docker compose
+down` preserves the named volume; `down -v` deletes it. Never bake `.env` or SSH
+keys into an image. To build/run without Compose:
+
+```sh
+docker build -t network-dashboard:local .
+docker run -d --name network-dashboard --init --restart unless-stopped --env-file .env -p 3000:3000 -v network-dashboard-data:/app/.data network-dashboard:local
+```
+
+### Automated image publishing
+
+[GitHub Actions](https://github.com/cbulock/network-dashboard/actions/workflows/container.yaml)
+tests and builds pull requests without publishing. Pushes to `main` publish
+`ghcr.io/cbulock/network-dashboard:latest` and a `sha-<full-commit>` tag. Tags
+matching `v*` publish that version tag (for example, `v1.0.0`) and its commit tag;
+they do not move `latest`. The workflow can also be run manually on `main`.
+
+Images support `linux/amd64` and `linux/arm64`. Before publication, CI starts the
+AMD64 image without database credentials and verifies HTTP health, dashboard
+HTML, collector imports, SSH availability, non-root execution and writable
+repair storage. Publishing follows GitHub's
+[Container Registry workflow](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)
+using its automatic `GITHUB_TOKEN` with `packages: write`; no registry password
+or integration credentials need to be added to Actions secrets.
+
+The image is hosted in [GitHub Packages](https://github.com/cbulock/network-dashboard/pkgs/container/network-dashboard).
+New packages default to private. If anonymous pulls are desired, change this
+package's visibility to Public in its settings. Otherwise sign in on the Docker
+host with a GitHub token that has `read:packages` using `docker login ghcr.io`.
+Repository visibility alone does not make the image public. The workflow does
+not change package visibility.
+
+To pin a deployment or roll back, set `DASHBOARD_IMAGE` in `.env` to a published
+version, `sha-<full-commit>` tag, or `ghcr.io/cbulock/network-dashboard@sha256:<digest>`
+from the workflow summary, then repeat the Compose update command. Images are
+hosted on GitHub; PostgreSQL and the running application stay on your Docker host.
+
 ### UniFi
 
 Set `UNIFI_HOST`, `UNIFI_USER`, and `UNIFI_PASS` in `.env`; `UNIFI_SITE` defaults to `default`. Run `npm run unifi:fetch` to collect connected clients (`stat/sta`), known/offline clients and reservations (`rest/user`), network settings (`rest/networkconf`), and managed UniFi devices (`stat/device`), including switches, access points, and gateways. Existing scheduled calls to `node scripts/fetch-unifi.js` also collect both. Inventory Refresh reads the database and does not run this collector.

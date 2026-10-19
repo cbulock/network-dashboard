@@ -1,0 +1,14 @@
+# Optional DNS Platform SSH access. Mount only the dedicated key and pinned hosts.
+services:
+  dashboard:
+    volumes:
+      - type: bind
+        source: ${DASHBOARD_SSH_DIR:?Set DASHBOARD_SSH_DIR to a dedicated SSH directory}
+        target: /home/node/.ssh
+        read_only: true
+  worker:
+    volumes:
+      - type: bind
+        source: ${DASHBOARD_SSH_DIR:?Set DASHBOARD_SSH_DIR to a dedicated SSH directory}
+        target: /home/node/.ssh
+        read_only: true
