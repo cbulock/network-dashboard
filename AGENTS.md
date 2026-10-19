@@ -70,7 +70,7 @@ Logging:
 
 ## Conventions and constraints
 
-* Prefer **modern JavaScript** for new code (repo has TS config, but don’t require TS).
+* Prefer **modern JavaScript/Typescript** for new code
 * Keep integrations isolated in `scripts/` (collector-like) unless there’s a clear reason to move server-side.
 * Avoid putting long-lived credentials in code. Use `.env`.
 * Don’t treat `.nuxt/` and `.output/` as source-of-truth (generated).

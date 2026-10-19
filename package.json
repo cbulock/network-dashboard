@@ -3,16 +3,23 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "mac:update": "node scripts/update-mac-vendors.js",
+    "unifi:fetch": "node scripts/fetch-unifi.js",
+    "dns:fetch": "node scripts/fetch-dns-platform.js",
+    "dns:worker": "node scripts/dns-worker.js",
+    "test": "node --test tests/*.test.js",
     "build": "nuxt build",
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
-    "postinstall": "nuxt prepare"
+    "postinstall": "nuxt prepare --envName development",
+    "unifi:rebuild-ips": "node scripts/rebuild-unifi-ips.js"
   },
   "dependencies": {
     "axios": "^1.8.1",
     "axios-cookiejar-support": "^6.0.2",
     "cheerio": "^1.0.0",
+    "cindor-ui-vue": "^0.1.70",
     "dotenv": "^16.4.7",
     "home-assistant-js-websocket": "^9.4.0",
     "nuxt": "^3.15.4",

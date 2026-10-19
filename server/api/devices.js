@@ -1,64 +1,79 @@
-import { defineEventHandler } from 'h3'
-// import axios from 'axios'
-// import * as cheerio from "cheerio";
-import Unifi from 'node-unifi'
+import { createError, defineEventHandler, getQuery, readBody } from "h3";
+import { listInventoryDevices } from "~/scripts/device-registry.js";
+import { withInventoryDb } from "~/server/utils/inventory-db.js";
 
-export default defineEventHandler(async () => {
-    try {
-        // 🔹 Unifi Controller API
-        const unifi = new Unifi.Controller({ host: process.env.UNIFI_HOST, port: 8443, sslverify: false })
-        await unifi.login(process.env.UNIFI_USER, process.env.UNIFI_PASS)
-        const unifiDevices = await unifi.getAccessDevices("default")
-        await unifi.logout()
+export default defineEventHandler(async (event) => {
+  if (event.method === "GET") {
+    const query = getQuery(event);
+    const tags = Array.isArray(query.tag)
+      ? query.tag
+      : query.tag
+        ? [query.tag]
+        : [];
 
-        // 🔹 Home Assistant API
-        //const haRes = await axios.get(`${process.env.HA_URL}/api/states`, {
-        //  headers: { Authorization: `Bearer ${process.env.HA_TOKEN}` }
-        // })
+    return withInventoryDb(async (db) => {
+      const devices = await listInventoryDevices(db, {
+        search: query.search,
+        sortBy: query.sortBy,
+        sortDir: query.sortDir,
+        tags,
+        vlanId: query.vlanId,
+      });
 
-        // 🔹 Nagios Status Page (HTML)
-        /*
-        const res = await axios.get(`${process.env.NAGIOS_URL}/cgi-bin/status.cgi?host=all`, {
-            auth: {
-                username: process.env.NAGIOS_USER,
-                password: process.env.NAGIOS_PASS,
-            },
-        });
+      return { devices };
+    });
+  }
 
-        // 🔹 Parse HTML with cheerio
-        const $ = cheerio.load(res.data);
-        const nagiosdevices = [];
-    
-        $("table.status > tbody > tr").each((_, el) => {
-          const hostCell = $(el).find("td:nth-child(1)"); // Hostname is in the first column
-          const serviceCell = $(el).find("td:nth-child(2)"); // Service is in the second column
-          const statusCell = $(el).find("td:nth-child(3)"); // Status is in the third column
-    
-          const hostname = hostCell.text().trim().split(/\s+/)[0]; // Extract only the hostname
-          const service = serviceCell.text().trim();
-          const status = statusCell.text().trim();
-    
-          nagiosdevices.push({ host: hostname, service, status });
-        });
-        */
+  if (event.method === "POST") {
+    const body = await readBody(event);
+    const targetDeviceKey = body?.targetDeviceKey;
+    const mappings = Array.isArray(body?.mappings) ? body.mappings : [];
 
-        return {
-             unifi: unifiDevices,
-            //  homeAssistant: haRes.data,
-            // nagios: nagiosdevices,
-            data: {
-                u: process.env.UNIFI_HOST,
-                h: process.env.HA_URL,
-                n: process.env.NAGIOS_URL,
-                uu: process.env.UNIFI_USER,
-                hu: process.env.HA_USER,
-                nu: process.env.NAGIOS_USER,
-                up: process.env.UNIFI_PASS,
-                hp: process.env.HA_PASS,
-                np: process.env.NAGIOS_PASS
-            }
-        }
-    } catch (error) {
-        return { error: error.message }
+    if (!targetDeviceKey || !mappings.length) {
+      throw createError({
+        statusCode: 400,
+        statusMessage: "targetDeviceKey and mappings are required",
+      });
     }
-})
+
+    return withInventoryDb(async (db) => {
+      const targetRes = await db.query(
+        "SELECT id FROM devices WHERE device_key = $1 LIMIT 1",
+        [targetDeviceKey]
+      );
+      const target = targetRes.rows[0];
+
+      if (!target) {
+        throw createError({
+          statusCode: 404,
+          statusMessage: "Target device not found",
+        });
+      }
+
+      for (const mapping of mappings) {
+        const source = mapping?.source ? String(mapping.source) : null;
+        const sourceId = mapping?.sourceId ? String(mapping.sourceId) : null;
+
+        if (!source || !sourceId) {
+          continue;
+        }
+
+        await db.query(
+          `
+            UPDATE device_sources
+            SET device_id = $1, link_method = 'manual', mapped_device_key = $4
+            WHERE source = $2 AND source_id = $3
+          `,
+          [target.id, source, sourceId, targetDeviceKey]
+        );
+      }
+
+      return { ok: true };
+    });
+  }
+
+  throw createError({
+    statusCode: 405,
+    statusMessage: "Method not allowed",
+  });
+});

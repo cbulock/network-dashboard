@@ -1,43 +1,58 @@
 import "dotenv/config";
-import pkg from "pg";
 import axios from "axios";
-
-const { Client } = pkg;
-const db = new Client({ connectionString: process.env.DATABASE_URL });
+import {
+  ensureDeviceSchema,
+  getDbClient,
+  upsertDeviceFromSource,
+} from "./device-registry.js";
+import { homeAssistantIdentity } from "./source-identity.js";
+import { snapshotColumns, storeHomeAssistantSnapshot } from "./source-snapshots.js";
 
 async function fetchHomeAssistantData() {
-    try {
-        await db.connect();
+  const db = await getDbClient();
+  try {
+    await ensureDeviceSchema(db);
+    const columns = await snapshotColumns(db, "ha_data");
 
-        const res = await axios.get(`${process.env.HA_URL}/api/states`, {
-            headers: { Authorization: `Bearer ${process.env.HA_TOKEN}` },
-        });
+    const res = await axios.get(`${process.env.HA_URL}/api/states`, {
+      headers: { Authorization: `Bearer ${process.env.HA_TOKEN}` },
+    });
 
-        const devices = res.data;
+    const devices = res.data;
 
-        for (const device of devices) {
-            const entityId = device.entity_id;
-            const friendlyName = device.attributes.friendly_name || "Unknown";
-            const ip = device.attributes.ip && device.attributes.ip !== "Unknown" ? device.attributes.ip : null;
-            const mac = device.attributes.mac && device.attributes.mac !== "Unknown" ? device.attributes.mac : null;
-            const status = device.state;
-            const attributes = JSON.stringify(device.attributes);
+    for (const device of devices) {
+      const entityId = device.entity_id;
+      const friendlyName = device.attributes.friendly_name || entityId;
+      const { ips, mac } = homeAssistantIdentity(device);
+      const ip = ips[0] ?? null;
+      const status = device.state;
+      const attributes = device.attributes;
+      const lastUpdated = device.last_updated || device.last_changed || new Date();
 
-            await db.query(
-                `INSERT INTO ha_data (entity_id, friendly_name, ip, mac, status, attributes, last_updated)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())
-         ON CONFLICT (entity_id) DO UPDATE
-         SET entity_id = EXCLUDED.entity_id, friendly_name = EXCLUDED.friendly_name, ip = EXCLUDED.ip, mac = EXCLUDED.mac, status = EXCLUDED.status, attributes = EXCLUDED.attributes, last_updated = NOW();`,
-                [entityId, friendlyName, ip, mac, status, attributes]
-            );
-        }
+      await storeHomeAssistantSnapshot(db, columns, { entityId, friendlyName, ip, mac, status, attributes, lastUpdated });
 
-        console.log("✅ Home Assistant data updated!");
-    } catch (error) {
-        console.error("❌ Home Assistant fetch error:", error.message);
-    } finally {
-        await db.end();
+      await upsertDeviceFromSource(db, {
+        source: "home_assistant",
+        sourceId: entityId,
+        mac,
+        ips,
+        name: friendlyName,
+        status,
+        lastSeen: lastUpdated,
+        details: {
+          entity_id: entityId,
+          attributes,
+        },
+      });
     }
+
+    console.log("✓ Home Assistant data updated");
+  } catch (error) {
+    console.error("✗ Home Assistant fetch error:", error.message);
+    process.exitCode = 1;
+  } finally {
+    await db.end();
+  }
 }
 
 fetchHomeAssistantData();
